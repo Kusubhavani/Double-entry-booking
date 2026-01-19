@@ -1,33 +1,33 @@
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
 from contextlib import contextmanager
 from typing import Generator
 import logging
+import os
 
 from config import settings
 
-# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Create engine with connection pooling
+# Use DATABASE_URL from environment or settings
+database_url = os.getenv('DATABASE_URL', settings.DATABASE_URL)
+
 engine = create_engine(
-    settings.DATABASE_URL,
-    pool_size=20,
-    max_overflow=30,
+    database_url,
+    pool_size=10,
+    max_overflow=20,
     pool_pre_ping=True,
     pool_recycle=3600,
     echo=settings.DEBUG,
-    isolation_level="REPEATABLE READ"
+    isolation_level="REPEATABLE_READ"
 )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-
 def get_db() -> Generator[Session, None, None]:
-    """Dependency for getting database session"""
     db = SessionLocal()
     try:
         yield db
@@ -39,10 +39,8 @@ def get_db() -> Generator[Session, None, None]:
     finally:
         db.close()
 
-
 @contextmanager
 def transaction():
-    """Context manager for handling transactions"""
     db = SessionLocal()
     try:
         yield db
@@ -53,18 +51,36 @@ def transaction():
     finally:
         db.close()
 
-
-def init_db():
-    """Initialize database and create tables"""
+# Function to run migrations on startup
+def run_migrations():
+    """Run database migrations on application startup"""
+    from alembic.config import Config
+    from alembic import command
+    
     try:
-        Base.metadata.create_all(bind=engine)
-        logger.info("Database tables created successfully")
-        
-        # Test connection
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
-            logger.info("Database connection test successful")
-            
+        alembic_cfg = Config("alembic.ini")
+        alembic_cfg.set_main_option("sqlalchemy.url", database_url)
+        command.upgrade(alembic_cfg, "head")
+        logger.info("Database migrations completed successfully")
     except Exception as e:
-        logger.error(f"Failed to initialize database: {e}")
+        logger.error(f"Failed to run migrations: {e}")
         raise
+
+# Function to check if migrations are needed
+def check_migrations():
+    """Check if database migrations are up-to-date"""
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+    
+    try:
+        alembic_cfg = Config("alembic.ini")
+        script = ScriptDirectory.from_config(alembic_cfg)
+        
+        # Get current head revision
+        head_revision = script.get_current_head()
+        
+        logger.info(f"Current head revision: {head_revision}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to check migrations: {e}")
+        return False
